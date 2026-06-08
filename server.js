@@ -1,9 +1,16 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const os = require("os");
+const WebSocket = require("ws");
+const { WebSocketServer } = WebSocket;
 const {
   DB_PATH,
   ensureLocalDbFile,
+  authenticateUser,
+  createUser,
+  getUserById,
   getDatabaseStatus,
   getHistory,
   saveHistory,
@@ -18,11 +25,85 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const HISTORY_LIMIT = 12;
 const ACTION_TYPES = ["attack", "dodgeLeft", "dodgeRight", "duck"];
 
+const AUTH_SECRET = process.env.AUTH_SECRET || "headbutt-berserker-dev-secret-change-me";
+const TOKEN_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
+
+function toBase64Url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function fromBase64Url(value) {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function signTokenPayload(payloadBase64) {
+  return crypto.createHmac("sha256", AUTH_SECRET).update(payloadBase64).digest("base64url");
+}
+
+function createAuthToken(user) {
+  const payload = toBase64Url(JSON.stringify({
+    sub: String(user.id),
+    username: user.username,
+    displayName: user.displayName,
+    gender: user.gender || "male",
+    iat: Date.now()
+  }));
+  return `${payload}.${signTokenPayload(payload)}`;
+}
+
+function verifyAuthToken(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [payloadBase64, signature] = token.split(".");
+  if (!payloadBase64 || !signature) return null;
+  const expected = signTokenPayload(payloadBase64);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  try {
+    const payload = JSON.parse(fromBase64Url(payloadBase64));
+    if (!payload || !payload.sub || !payload.iat) return null;
+    if (Date.now() - Number(payload.iat) > TOKEN_MAX_AGE_MS) return null;
+    return payload;
+  } catch (error) {
+    return null;
+  }
+}
+
+function readBearerToken(req) {
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.toLowerCase().startsWith("bearer ")) return null;
+  return authHeader.slice(7).trim();
+}
+
+async function getAuthenticatedUser(req) {
+  const payload = verifyAuthToken(readBearerToken(req));
+  if (!payload) return null;
+  return getUserById(payload.sub);
+}
+
+async function requireAuthenticatedUser(req, res) {
+  const user = await getAuthenticatedUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Login obrigatório para acessar este recurso." });
+    return null;
+  }
+  return user;
+}
+
+function sendAuthResponse(res, user) {
+  sendJson(res, 200, {
+    token: createAuthToken(user),
+    user
+  });
+}
+
+
 function getBaseHeaders(extraHeaders = {}) {
   return {
     "Access-Control-Allow-Origin": CORS_ORIGIN,
     "Access-Control-Allow-Methods": "GET,POST,HEAD,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer-when-downgrade",
     ...extraHeaders
@@ -60,6 +141,8 @@ function getMimeType(filePath) {
     case ".jpg":
     case ".jpeg": return "image/jpeg";
     case ".webp": return "image/webp";
+    case ".glb": return "model/gltf-binary";
+    case ".gltf": return "model/gltf+json";
     case ".mp3": return "audio/mpeg";
     case ".ico": return "image/x-icon";
     default: return "application/octet-stream";
@@ -230,6 +313,8 @@ function normalizeHistoryItem(rawItem) {
 function serializeActionItem(item) {
   return {
     id: item.id,
+    userId: item.userId || item.user_id || null,
+    playerName: item.playerName || item.player_name || null,
     phase: item.phase,
     expectedAction: item.expectedAction,
     actualAction: item.actualAction,
@@ -263,6 +348,8 @@ function serializeActionBreakdown(breakdown) {
 function serializeHistoryItem(item) {
   return {
     id: item.id,
+    userId: item.userId || item.user_id || null,
+    playerName: item.playerName || item.player_name || null,
     phase: item.phase,
     customMode: item.customMode,
     difficultyPhase: item.difficultyPhase,
@@ -381,6 +468,90 @@ function buildHistoryInsights(entries) {
   };
 }
 
+function normalizeQuestionText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(1)}%`;
+}
+
+function formatSeconds(value) {
+  return value == null || !Number.isFinite(Number(value)) ? "--" : `${Number(value).toFixed(2)}s`;
+}
+
+function getActionLabel(actionType) {
+  const labels = {
+    attack: "ataque",
+    dodgeLeft: "desvio para a esquerda",
+    dodgeRight: "desvio para a direita",
+    duck: "agachar"
+  };
+  return labels[actionType] || actionType;
+}
+
+function rankActionsByMetric(insights, metric, direction = "asc") {
+  return Object.entries(insights.byAction || {})
+    .filter(([, stats]) => stats && stats.attempts > 0)
+    .sort((a, b) => {
+      const av = Number(a[1][metric]) || 0;
+      const bv = Number(b[1][metric]) || 0;
+      return direction === "desc" ? bv - av : av - bv;
+    });
+}
+
+function createAssistantAnswer(question, insights, user) {
+  const text = normalizeQuestionText(question);
+  const totals = insights.totals || {};
+  const sampleSize = insights.sampleSize || 0;
+
+  if (sampleSize === 0 || !totals.attempts) {
+    return `${user.displayName || user.username}, ainda nao tenho partidas suficientes para analisar. Jogue uma fase e volte aqui para eu ler precisao, reacao e erros por movimento.`;
+  }
+
+  const weakest = rankActionsByMetric(insights, "accuracy", "asc")[0];
+  const mostTimeouts = rankActionsByMetric(insights, "timeoutRate", "desc")[0];
+  const slowest = rankActionsByMetric(insights, "avgReaction", "desc")
+    .find(([, stats]) => stats.avgReaction != null);
+
+  if (text.includes("erro") || text.includes("pior") || text.includes("fraco") || text.includes("dificuldade")) {
+    if (!weakest) return "Nao encontrei um movimento fraco ainda.";
+    const [action, stats] = weakest;
+    return `Seu ponto mais fraco agora e ${getActionLabel(action)}: ${formatPercent(stats.accuracy)} de precisao em ${stats.attempts} tentativas. Treine esse movimento em ritmo lento antes de subir a dificuldade.`;
+  }
+
+  if (text.includes("reacao") || text.includes("tempo") || text.includes("rapido") || text.includes("lento")) {
+    const reaction = formatSeconds(totals.overallAvgReaction);
+    if (!slowest) return `Sua reacao media geral esta em ${reaction}. Ainda faltam amostras por movimento para dizer qual e o mais lento.`;
+    const [action, stats] = slowest;
+    return `Sua reacao media geral esta em ${reaction}. O movimento mais lento foi ${getActionLabel(action)}, com media de ${formatSeconds(stats.avgReaction)}.`;
+  }
+
+  if (text.includes("precisao") || text.includes("acerto") || text.includes("acertos")) {
+    return `Sua precisao geral esta em ${formatPercent(totals.overallAccuracy)}: ${totals.hits} acertos em ${totals.attempts} tentativas registradas.`;
+  }
+
+  if (text.includes("tempo esgotado") || text.includes("timeout") || text.includes("demoro")) {
+    if (!mostTimeouts) return "Ainda nao ha tentativas suficientes para comparar tempo esgotado.";
+    const [action, stats] = mostTimeouts;
+    return `O maior indice de tempo esgotado apareceu em ${getActionLabel(action)}: ${formatPercent(stats.timeoutRate)} das tentativas desse movimento.`;
+  }
+
+  if (text.includes("ultima") || text.includes("recente") || text.includes("sessao")) {
+    const latest = insights.latestEntry;
+    if (!latest) return "Nao encontrei sessao recente.";
+    return `Sua ultima sessao ficou como ${latest.status}, fase ${latest.phase}, com ${formatPercent(latest.accuracy)} de precisao e reacao media de ${formatSeconds(latest.avgReaction)}.`;
+  }
+
+  const weakText = weakest
+    ? `${getActionLabel(weakest[0])} (${formatPercent(weakest[1].accuracy)})`
+    : "sem ponto fraco definido";
+  return `Resumo: ${sampleSize} sessoes, ${totals.attempts} tentativas, ${formatPercent(totals.overallAccuracy)} de precisao e reacao media de ${formatSeconds(totals.overallAvgReaction)}. Ponto de atencao: ${weakText}.`;
+}
+
 function collectRequestBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -410,37 +581,87 @@ function collectRequestBody(req) {
   });
 }
 
-async function handleHistoryGet(res) {
-  const entries = await getHistory();
+async function handleHistoryGet(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+  const entries = await getHistory(user.id);
   sendJson(res, 200, entries.map((item) => normalizeHistoryItem(item)).filter(Boolean));
 }
 
-async function handleHistoryInsightsGet(res) {
-  const entries = await getHistory();
+async function handleHistoryInsightsGet(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+  const entries = await getHistory(user.id);
   const normalizedEntries = entries.map((item) => normalizeHistoryItem(item)).filter(Boolean);
   sendJson(res, 200, buildHistoryInsights(normalizedEntries));
 }
 
-async function handleHistoryPost(req, res) {
+async function handleAssistantChat(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+
   const body = await collectRequestBody(req);
-  const entry = normalizeHistoryItem(body);
+  const question = String(body.question || "").trim().slice(0, 800);
+
+  if (!question) {
+    sendJson(res, 400, { error: "Pergunta obrigatoria." });
+    return;
+  }
+
+  const entries = await getHistory(user.id);
+  const normalizedEntries = entries.map((item) => normalizeHistoryItem(item)).filter(Boolean);
+  const insights = buildHistoryInsights(normalizedEntries);
+  const answer = createAssistantAnswer(question, insights, user);
+
+  sendJson(res, 200, {
+    answer,
+    insights
+  });
+}
+
+async function handleHistoryPost(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+  const body = await collectRequestBody(req);
+  const entry = normalizeHistoryItem({ ...body, userId: user.id, playerName: user.displayName });
 
   if (!entry) {
     sendJson(res, 400, { error: "Invalid history entry" });
     return;
   }
 
-  const savedEntry = await saveHistory(entry);
+  const savedEntry = await saveHistory(entry, user);
   sendJson(res, 201, normalizeHistoryItem(savedEntry) || entry);
 }
 
 async function handleHistoryImport(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
   const body = await collectRequestBody(req);
   const entries = Array.isArray(body.entries) ? body.entries : [];
 
   const normalizedEntries = entries.map((item) => normalizeHistoryItem(item)).filter(Boolean).slice(0, HISTORY_LIMIT);
-  const savedEntries = await replaceHistory(normalizedEntries);
+  const savedEntries = await replaceHistory(normalizedEntries, user);
   sendJson(res, 200, savedEntries.map((item) => normalizeHistoryItem(item)).filter(Boolean));
+}
+
+
+async function handleRegister(req, res) {
+  const body = await collectRequestBody(req);
+  const user = await createUser(body.username, body.password, body.gender);
+  sendAuthResponse(res, user);
+}
+
+async function handleLogin(req, res) {
+  const body = await collectRequestBody(req);
+  const user = await authenticateUser(body.username, body.password);
+  sendAuthResponse(res, user);
+}
+
+async function handleMe(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+  sendJson(res, 200, { user });
 }
 
 function serveStaticFile(res, filePath) {
@@ -450,6 +671,53 @@ function serveStaticFile(res, filePath) {
   } catch (error) {
     sendText(res, 404, "Not found", "text/plain; charset=utf-8");
   }
+}
+
+function normalizeRoomCode(value) {
+  const room = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, "")
+    .slice(0, 18);
+  return room || crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+function normalizeClientRole(value) {
+  const role = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 20);
+  return role || "player";
+}
+
+function getNetworkHosts(req) {
+  const hosts = new Set();
+  const hostHeader = req.headers.host || `localhost:${PORT}`;
+  hosts.add(hostHeader);
+  hosts.add(`localhost:${PORT}`);
+
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (!address || address.internal || address.family !== "IPv4") continue;
+      hosts.add(`${address.address}:${PORT}`);
+    }
+  }
+
+  return Array.from(hosts);
+}
+
+function buildRoomLinks(req, room) {
+  const roomCode = normalizeRoomCode(room);
+  return {
+    room: roomCode,
+    links: getNetworkHosts(req).map((host) => ({
+      host,
+      landing: `http://${host}/?room=${encodeURIComponent(roomCode)}`,
+      game: `http://${host}/game?room=${encodeURIComponent(roomCode)}`,
+      mirror: `http://${host}/game?room=${encodeURIComponent(roomCode)}&mirror=1`
+    }))
+  };
+}
+
+function handleRoomGet(req, res, requestUrl) {
+  sendJson(res, 200, buildRoomLinks(req, requestUrl.searchParams.get("room")));
 }
 
 const server = http.createServer((req, res) => {
@@ -478,13 +746,38 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (requestUrl.pathname === "/api/room" && (req.method === "GET" || req.method === "HEAD")) {
+    handleRoomGet(req, res, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/auth/register" && req.method === "POST") {
+    handleRegister(req, res).catch((error) => sendJson(res, 400, { error: error.message }));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/auth/login" && req.method === "POST") {
+    handleLogin(req, res).catch((error) => sendJson(res, 401, { error: error.message }));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/auth/me" && req.method === "GET") {
+    handleMe(req, res).catch((error) => sendJson(res, 401, { error: error.message }));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/history" && req.method === "GET") {
-    handleHistoryGet(res).catch((error) => sendJson(res, 500, { error: error.message }));
+    handleHistoryGet(req, res).catch((error) => sendJson(res, 500, { error: error.message }));
     return;
   }
 
   if (requestUrl.pathname === "/api/history/insights" && req.method === "GET") {
-    handleHistoryInsightsGet(res).catch((error) => sendJson(res, 500, { error: error.message }));
+    handleHistoryInsightsGet(req, res).catch((error) => sendJson(res, 500, { error: error.message }));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/assistant/chat" && req.method === "POST") {
+    handleAssistantChat(req, res).catch((error) => sendJson(res, 500, { error: error.message }));
     return;
   }
 
@@ -500,6 +793,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method !== "GET" && req.method !== "HEAD") {
     sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  if (requestUrl.pathname === "/game" || requestUrl.pathname === "/game/") {
+    serveStaticFile(res, path.join(PUBLIC_DIR, "game.html"));
     return;
   }
 
@@ -527,9 +825,122 @@ const server = http.createServer((req, res) => {
   serveStaticFile(res, filePath);
 });
 
+const rooms = new Map();
+const wss = new WebSocketServer({ noServer: true });
+
+function getRoomClients(roomCode) {
+  const room = normalizeRoomCode(roomCode);
+  if (!rooms.has(room)) rooms.set(room, new Set());
+  return rooms.get(room);
+}
+
+function sendSocketJson(socket, payload) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify(payload));
+}
+
+function broadcastRoom(roomCode, payload, exceptSocket = null) {
+  const clients = getRoomClients(roomCode);
+  for (const client of clients) {
+    if (client === exceptSocket) continue;
+    sendSocketJson(client, payload);
+  }
+}
+
+function roomPresence(roomCode) {
+  const clients = getRoomClients(roomCode);
+  return Array.from(clients).map((client) => ({
+    id: client.clientId,
+    role: client.clientRole
+  }));
+}
+
+wss.on("connection", (socket, req, context = {}) => {
+  const room = normalizeRoomCode(context.room);
+  const role = normalizeClientRole(context.role);
+  const clientId = crypto.randomBytes(8).toString("hex");
+  const clients = getRoomClients(room);
+
+  socket.roomCode = room;
+  socket.clientRole = role;
+  socket.clientId = clientId;
+  clients.add(socket);
+
+  sendSocketJson(socket, {
+    type: "room-ready",
+    room,
+    clientId,
+    role,
+    peers: roomPresence(room),
+    sentAt: Date.now()
+  });
+
+  broadcastRoom(room, {
+    type: "peer-joined",
+    room,
+    clientId,
+    role,
+    peers: roomPresence(room),
+    sentAt: Date.now()
+  }, socket);
+
+  socket.on("message", (raw) => {
+    let message = null;
+    try {
+      message = JSON.parse(String(raw));
+    } catch (error) {
+      return;
+    }
+    if (!message || typeof message !== "object") return;
+
+    broadcastRoom(room, {
+      ...message,
+      room,
+      clientId,
+      role,
+      sentAt: Date.now()
+    }, socket);
+  });
+
+  socket.on("close", () => {
+    clients.delete(socket);
+    if (clients.size === 0) rooms.delete(room);
+    broadcastRoom(room, {
+      type: "peer-left",
+      room,
+      clientId,
+      role,
+      peers: roomPresence(room),
+      sentAt: Date.now()
+    }, socket);
+  });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  let requestUrl;
+  try {
+    requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+  } catch (error) {
+    socket.destroy();
+    return;
+  }
+
+  if (requestUrl.pathname !== "/ws") {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req, {
+      room: requestUrl.searchParams.get("room"),
+      role: requestUrl.searchParams.get("role")
+    });
+  });
+});
+
 server.listen(PORT, HOST, () => {
   ensureLocalDbFile();
   console.log(`Headbutt Berserker server running at http://${HOST}:${PORT}`);
   console.log(`Database fallback path: ${DB_PATH}`);
-  console.log(`Database provider: ${process.env.USE_SUPABASE === "true" ? "Supabase/PostgreSQL" : "db.json"}`);
+  console.log(`Database provider: ${process.env.USE_SUPABASE === "true" ? "Supabase" : (process.env.USE_POSTGRES === "true" || process.env.DATABASE_URL ? "PostgreSQL" : "db.json")}`);
 });

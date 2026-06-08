@@ -284,22 +284,20 @@ function setRoundControlsVisibility(isRunning) {
 
   if (isRunning) {
     for (const child of children) {
-      if (pauseOnlyIds.has(child.id)) {
-        child.setAttribute("visible", "false");
-        continue;
-      }
       child.setAttribute("visible", "false");
     }
 
     stopButtonGroup.setAttribute("visible", "true");
   } else {
     for (const child of children) {
-      if (pauseOnlyIds.has(child.id)) {
+      if (pauseOnlyIds.has(child.id) || child.id === "stopButtonGroup") {
         child.setAttribute("visible", "false");
         continue;
       }
       child.setAttribute("visible", "true");
     }
+
+    stopButtonGroup.setAttribute("visible", "false");
   }
 }
 
@@ -358,7 +356,11 @@ window.addEventListener("load", () => {
     });
     setSfxVolume(sfxVolumeSelectEl.value);
   } else if (typeof setSfxVolume === "function") {
-    setSfxVolume(1);
+    setSfxVolume(0.25);
+  }
+
+  if (typeof setRoundControlsVisibility === "function") {
+    setRoundControlsVisibility(false);
   }
 });
 
@@ -381,22 +383,61 @@ function hideAllVRMenus() {
 }
 
 function positionVRMenusInFrontOfPlayer() {
-  // Mantém o menu de pausa fixo no centro da cena principal,
-  // em vez de prendê-lo à direção atual da câmera/jogador.
-  // Assim, ao clicar em pause, o painel aparece sempre no mesmo lugar
-  // do mundo e não acompanha a cabeça.
+  const cam = document.getElementById("playerCamera");
+  if (!cam || typeof THREE === "undefined") return;
+
+  const camWorldPos = new THREE.Vector3();
+  const camWorldQuat = new THREE.Quaternion();
+  cam.object3D.getWorldPosition(camWorldPos);
+  cam.object3D.getWorldQuaternion(camWorldQuat);
+
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camWorldQuat);
+  forward.y = 0;
+  if (forward.lengthSq() < 0.0001) {
+    forward.set(0, 0, -1);
+  } else {
+    forward.normalize();
+  }
+
+  const targetBase = camWorldPos.clone().add(forward.clone().multiplyScalar(2.75));
+  targetBase.y = 1.48;
+
   const fixedMenus = [
-    { id: "menuMainScreen", position: "0 1.38 -3.25", rotation: "0 0 0", scale: "0.82 0.82 0.82" },
-    { id: "menuCustomizeScreen", position: "0 1.46 -3.15", rotation: "0 0 0", scale: "0.82 0.82 0.82" },
-    { id: "menuHistoryScreen", position: "0 1.38 -3.35", rotation: "0 0 0", scale: "0.78 0.78 0.78" }
+    { id: "menuMainScreen", y: 1.42, zOffset: 0, scale: "0.88 0.88 0.88" },
+    { id: "menuCustomizeScreen", y: 1.50, zOffset: 0.04, scale: "0.76 0.76 0.76" },
+    { id: "menuHistoryScreen", y: 1.45, zOffset: -0.04, scale: "0.80 0.80 0.80" }
   ];
 
   for (const item of fixedMenus) {
     const menu = document.getElementById(item.id);
     if (!menu) continue;
-    menu.setAttribute("position", item.position);
-    menu.setAttribute("rotation", item.rotation);
+
+    const pos = targetBase.clone().add(forward.clone().multiplyScalar(item.zOffset || 0));
+    pos.y = item.y;
+    menu.object3D.position.copy(pos);
+
+    const lookTarget = camWorldPos.clone();
+    lookTarget.y = item.y;
+    menu.object3D.lookAt(lookTarget);
+    menu.object3D.rotation.x = 0;
+    menu.object3D.rotation.z = 0;
     menu.setAttribute("scale", item.scale);
+  }
+}
+
+function setMenuOcclusionSafeVisibility(menuOpen) {
+  // Durante o pause VR, estes elementos ficavam cruzando a frente do painel.
+  // Escondemos só enquanto o menu está aberto para manter a leitura limpa.
+  const ids = [
+    "enemyWorldHpRoot",
+    "cameraHudRoot",
+    "clouds"
+  ];
+
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.setAttribute("visible", String(!menuOpen));
   }
 }
 
@@ -410,6 +451,7 @@ function setVRMenuOpen(open) {
 
   vrMenuState.isOpen = open;
   overlay.setAttribute("visible", String(open));
+  setMenuOcclusionSafeVisibility(Boolean(open));
 
   if (pauseButton) pauseButton.setAttribute("visible", String(!open));
   if (menuCursor) {
@@ -440,6 +482,7 @@ function setVRMenuOpen(open) {
 
 function showVRMenu(menuId) {
   if (!vrMenuState.isOpen) return;
+  positionVRMenusInFrontOfPlayer();
   hideAllVRMenus();
 
   const targetMenu = document.getElementById(menuId);
@@ -502,7 +545,9 @@ function updateSfxVolumeButtons() {
   for (const item of buttons) {
     const btn = document.getElementById(item.id);
     if (!btn) continue;
-    btn.setAttribute("color", currentVolume === item.value ? "#4ECDC4" : "#273242");
+    const volColor = currentVolume === item.value ? "#4ECDC4" : "#273242";
+    btn.setAttribute("color", volColor);
+    btn.setAttribute('data-base-color', volColor);
   }
 }
 
@@ -519,23 +564,48 @@ function updateCustomizeMenuDisplay() {
   const livesDisplay = document.getElementById("customLivesDisplay");
   const enemyDisplay = document.getElementById("customEnemyDisplay");
 
-  if (typeof customLivesEl !== 'undefined' && customLivesEl && livesDisplay) {
-    setCanvasText(livesDisplay, String(customLivesEl.value || 3));
+  // If the digit lock elements exist, render each digit separately.
+  const ld0 = document.getElementById('customLivesDigit0');
+  const ld1 = document.getElementById('customLivesDigit1');
+  const ld2 = document.getElementById('customLivesDigit2');
+  if (typeof customLivesEl !== 'undefined' && customLivesEl) {
+    const val = String(Math.max(1, parseInt(customLivesEl.value, 10) || 1)).padStart(3, '0');
+    if (ld0 && ld1 && ld2) {
+      setCanvasText(ld0, val[0]);
+      setCanvasText(ld1, val[1]);
+      setCanvasText(ld2, val[2]);
+    } else if (livesDisplay) {
+      setCanvasText(livesDisplay, String(customLivesEl.value || 3));
+    }
   }
 
-  if (typeof customEnemyHitsEl !== 'undefined' && customEnemyHitsEl && enemyDisplay) {
-    setCanvasText(enemyDisplay, String(customEnemyHitsEl.value || 3));
+  const ed0 = document.getElementById('customEnemyDigit0');
+  const ed1 = document.getElementById('customEnemyDigit1');
+  const ed2 = document.getElementById('customEnemyDigit2');
+  if (typeof customEnemyHitsEl !== 'undefined' && customEnemyHitsEl) {
+    const valE = String(Math.max(1, parseInt(customEnemyHitsEl.value, 10) || 1)).padStart(3, '0');
+    if (ed0 && ed1 && ed2) {
+      setCanvasText(ed0, valE[0]);
+      setCanvasText(ed1, valE[1]);
+      setCanvasText(ed2, valE[2]);
+    } else if (enemyDisplay) {
+      setCanvasText(enemyDisplay, String(customEnemyHitsEl.value || 3));
+    }
   }
 
   const livesInfiniteBtn = document.getElementById('customLivesInfiniteBtn');
   const enemyInfiniteBtn = document.getElementById('customEnemyInfiniteBtn');
 
   if (typeof customLivesInfiniteEl !== 'undefined' && customLivesInfiniteEl && livesInfiniteBtn) {
-    livesInfiniteBtn.setAttribute('color', customLivesInfiniteEl.checked ? '#4ECDC4' : '#555');
+    const livesColor = customLivesInfiniteEl.checked ? '#4ECDC4' : '#555';
+    livesInfiniteBtn.setAttribute('color', livesColor);
+    livesInfiniteBtn.setAttribute('data-base-color', livesColor);
   }
 
   if (typeof customEnemyHitsInfiniteEl !== 'undefined' && customEnemyHitsInfiniteEl && enemyInfiniteBtn) {
-    enemyInfiniteBtn.setAttribute('color', customEnemyHitsInfiniteEl.checked ? '#4ECDC4' : '#555');
+    const enemyColor = customEnemyHitsInfiniteEl.checked ? '#4ECDC4' : '#555';
+    enemyInfiniteBtn.setAttribute('color', enemyColor);
+    enemyInfiniteBtn.setAttribute('data-base-color', enemyColor);
   }
 
   const difficultyBtn1 = document.getElementById('difficultyBtn1');
@@ -545,13 +615,19 @@ function updateCustomizeMenuDisplay() {
   const selectedDifficulty = customDifficultyEl ? parseInt(customDifficultyEl.value, 10) : 1;
 
   if (difficultyBtn1) {
-    difficultyBtn1.setAttribute('color', selectedDifficulty === 1 ? '#4ECDC4' : '#2C6CB0');
+    const d1Color = selectedDifficulty === 1 ? '#4ECDC4' : '#2C6CB0';
+    difficultyBtn1.setAttribute('color', d1Color);
+    difficultyBtn1.setAttribute('data-base-color', d1Color);
   }
   if (difficultyBtn2) {
-    difficultyBtn2.setAttribute('color', selectedDifficulty === 2 ? '#4ECDC4' : '#B8A200');
+    const d2Color = selectedDifficulty === 2 ? '#4ECDC4' : '#B8A200';
+    difficultyBtn2.setAttribute('color', d2Color);
+    difficultyBtn2.setAttribute('data-base-color', d2Color);
   }
   if (difficultyBtn3) {
-    difficultyBtn3.setAttribute('color', selectedDifficulty === 3 ? '#4ECDC4' : '#8B0000');
+    const d3Color = selectedDifficulty === 3 ? '#4ECDC4' : '#8B0000';
+    difficultyBtn3.setAttribute('color', d3Color);
+    difficultyBtn3.setAttribute('data-base-color', d3Color);
   }
 
   updateSfxVolumeButtons();
@@ -745,6 +821,8 @@ function selectHistoryTab() {
   if (aiContent) aiContent.setAttribute("visible", "false");
   if (tabHistoryBtn) tabHistoryBtn.setAttribute("color", "#2C5AA0");
   if (tabAIBtn) tabAIBtn.setAttribute("color", "#555555");
+  if (tabHistoryBtn) tabHistoryBtn.setAttribute('data-base-color', '#2C5AA0');
+  if (tabAIBtn) tabAIBtn.setAttribute('data-base-color', '#555555');
   
   updateHistoryMenuDisplay();
 }
@@ -761,6 +839,8 @@ function selectAITab() {
   if (aiContent) aiContent.setAttribute("visible", "true");
   if (tabHistoryBtn) tabHistoryBtn.setAttribute("color", "#555555");
   if (tabAIBtn) tabAIBtn.setAttribute("color", "#2C5AA0");
+  if (tabHistoryBtn) tabHistoryBtn.setAttribute('data-base-color', '#555555');
+  if (tabAIBtn) tabAIBtn.setAttribute('data-base-color', '#2C5AA0');
 
   updateAIAssistantDisplay();
 }

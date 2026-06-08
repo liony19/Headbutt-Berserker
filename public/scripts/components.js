@@ -159,6 +159,52 @@ AFRAME.registerComponent("canvas-text", {
   }
 });
 
+// Remove smoothing filter on the sand texture so the image appears unfiltered
+AFRAME.registerComponent('sand-texture-filter', {
+  init: function () {
+    this.applyFix = this.applyFix.bind(this);
+    if (this.el.sceneEl) {
+      this.el.sceneEl.addEventListener('loaded', this.applyFix);
+    } else {
+      window.addEventListener('load', this.applyFix);
+    }
+  },
+
+  applyFix: function () {
+    const img = document.getElementById('sandTexture');
+    if (!img) return;
+
+    const tex = new THREE.Texture(img);
+    tex.needsUpdate = true;
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+
+    const candidates = Array.from(document.querySelectorAll('[material]'));
+    candidates.forEach((el) => {
+      const mesh = el.getObject3D && el.getObject3D('mesh');
+      if (!mesh) return;
+      const applyTo = (m) => {
+        if (!m || !m.map || !m.map.image) return;
+        if (m.map.image === img || (m.map.image.src && m.map.image.src.indexOf('sand-beige-natural.png') !== -1)) {
+          m.map = tex;
+          m.needsUpdate = true;
+        }
+      };
+
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(applyTo);
+      } else {
+        applyTo(mesh.material);
+      }
+    });
+  },
+
+  remove: function () {
+    if (this.el.sceneEl) this.el.sceneEl.removeEventListener('loaded', this.applyFix);
+    window.removeEventListener('load', this.applyFix);
+  }
+});
+
 AFRAME.registerComponent("always-on-top", {
   schema: {
     order: { type: "number", default: 10000 }
@@ -215,6 +261,35 @@ AFRAME.registerComponent("gaze-button", {
     this.hasActivated = false;
     this.raycaster = new THREE.Raycaster();
     this.direction = new THREE.Vector3();
+    this.baseColor = this.el.getAttribute("color") || "#273242";
+
+    // Deixa a própria hitbox do menu visível e com contorno.
+    // Assim o jogador enxerga claramente o que é clicável/selecionável no VR.
+    const menuRoot = this.el.closest && this.el.closest("#menuMainScreen, #menuCustomizeScreen, #menuHistoryScreen");
+    this.isMenuButton = Boolean(menuRoot);
+    this.buttonFrame = null;
+
+    if (this.isMenuButton) {
+      const width = parseFloat(this.el.getAttribute("width")) || 1;
+      const height = parseFloat(this.el.getAttribute("height")) || 0.4;
+
+      this.el.setAttribute(
+        "material",
+        "shader: flat; transparent: true; opacity: 0.97; depthTest: false; depthWrite: false; side: double"
+      );
+
+      this.buttonFrame = document.createElement("a-plane");
+      this.buttonFrame.setAttribute("width", String(width + 0.10));
+      this.buttonFrame.setAttribute("height", String(height + 0.10));
+      this.buttonFrame.setAttribute("position", "0 0 -0.012");
+      this.buttonFrame.setAttribute("color", "#F8D070");
+      this.buttonFrame.setAttribute("opacity", "0.42");
+      this.buttonFrame.setAttribute(
+        "material",
+        "shader: flat; transparent: true; opacity: 0.42; depthTest: false; depthWrite: false; side: double"
+      );
+      this.el.appendChild(this.buttonFrame);
+    }
 
     this.isVisibleInHierarchy = () => {
       let current = this.el;
@@ -330,6 +405,26 @@ AFRAME.registerComponent("gaze-button", {
           customLivesEl.value = Math.max(1, (parseInt(customLivesEl.value, 10) || 3) - 1);
         }
         if (typeof updateCustomizeMenuDisplay === 'function') updateCustomizeMenuDisplay();
+      } else if (this.data.action && this.data.action.indexOf && this.data.action.indexOf('custom_lives_digit_') === 0) {
+        // actions: custom_lives_digit_inc_X or custom_lives_digit_dec_X where X is 0,1,2
+        if (typeof customLivesEl !== 'undefined' && customLivesEl) {
+          const parts = this.data.action.split('_');
+          const op = parts[3]; // inc or dec
+          const idx = parseInt(parts[4], 10);
+          const current = String(Math.max(0, parseInt(customLivesEl.value, 10) || 0)).padStart(3, '0');
+          const digits = current.split('').map(d => parseInt(d, 10));
+          if (Number.isFinite(idx) && idx >= 0 && idx <= 2) {
+            if (op === 'inc') {
+              digits[idx] = (digits[idx] + 1) % 10;
+            } else {
+              digits[idx] = (digits[idx] + 9) % 10;
+            }
+          }
+          let combined = Number(digits.join(''));
+          if (combined === 0) combined = 1; // restrição: não permitir 000
+          customLivesEl.value = String(combined);
+        }
+        if (typeof updateCustomizeMenuDisplay === 'function') updateCustomizeMenuDisplay();
       } else if (this.data.action === "custom_toggle_lives_infinite") {
         if (typeof vrMenuState !== 'undefined' && vrMenuState.isOpen && typeof customLivesInfiniteEl !== 'undefined' && customLivesInfiniteEl) {
           customLivesInfiniteEl.checked = !customLivesInfiniteEl.checked;
@@ -338,6 +433,26 @@ AFRAME.registerComponent("gaze-button", {
       } else if (this.data.action === "custom_enemy_inc") {
         if (typeof customEnemyHitsEl !== 'undefined' && customEnemyHitsEl) {
           customEnemyHitsEl.value = Math.max(1, (parseInt(customEnemyHitsEl.value, 10) || 3) + 1);
+        }
+        if (typeof updateCustomizeMenuDisplay === 'function') updateCustomizeMenuDisplay();
+      } else if (this.data.action && this.data.action.indexOf && this.data.action.indexOf('custom_enemy_digit_') === 0) {
+        // actions: custom_enemy_digit_inc_X or custom_enemy_digit_dec_X where X is 0,1,2
+        if (typeof customEnemyHitsEl !== 'undefined' && customEnemyHitsEl) {
+          const partsE = this.data.action.split('_');
+          const opE = partsE[3];
+          const idxE = parseInt(partsE[4], 10);
+          const currentE = String(Math.max(0, parseInt(customEnemyHitsEl.value, 10) || 0)).padStart(3, '0');
+          const digitsE = currentE.split('').map(d => parseInt(d, 10));
+          if (Number.isFinite(idxE) && idxE >= 0 && idxE <= 2) {
+            if (opE === 'inc') {
+              digitsE[idxE] = (digitsE[idxE] + 1) % 10;
+            } else {
+              digitsE[idxE] = (digitsE[idxE] + 9) % 10;
+            }
+          }
+          let combinedE = Number(digitsE.join(''));
+          if (combinedE === 0) combinedE = 1; // restrição: não permitir 000
+          customEnemyHitsEl.value = String(combinedE);
         }
         if (typeof updateCustomizeMenuDisplay === 'function') updateCustomizeMenuDisplay();
       } else if (this.data.action === "custom_toggle_enemy_infinite") {
@@ -380,6 +495,18 @@ AFRAME.registerComponent("gaze-button", {
         this.defaultScale.z * 1.06
       );
 
+      if (this.isMenuButton) {
+        this.baseColor = this.el.getAttribute("color") || this.baseColor;
+        // store the base color on the element so external updates can be respected
+        this.el.setAttribute('data-base-color', this.baseColor);
+        this.el.setAttribute("color", "#FFFFFF");
+        if (this.buttonFrame) {
+          this.buttonFrame.setAttribute("color", "#FFFFFF");
+          this.buttonFrame.setAttribute("opacity", "0.72");
+          this.buttonFrame.setAttribute("material", "shader: flat; transparent: true; opacity: 0.72; depthTest: false; depthWrite: false; side: double");
+        }
+      }
+
       this.clearHoverTimer();
       this.hoverTimeout = setTimeout(() => {
         this.activate();
@@ -390,6 +517,15 @@ AFRAME.registerComponent("gaze-button", {
       this.clearHoverTimer();
       this.hasActivated = false;
       this.el.object3D.scale.copy(this.defaultScale);
+      if (this.isMenuButton) {
+        const restoreColor = this.el.getAttribute('data-base-color') || this.baseColor;
+        this.el.setAttribute("color", restoreColor);
+        if (this.buttonFrame) {
+          this.buttonFrame.setAttribute("color", "#F8D070");
+          this.buttonFrame.setAttribute("opacity", "0.42");
+          this.buttonFrame.setAttribute("material", "shader: flat; transparent: true; opacity: 0.42; depthTest: false; depthWrite: false; side: double");
+        }
+      }
     });
 
     this.el.addEventListener("click", () => {
