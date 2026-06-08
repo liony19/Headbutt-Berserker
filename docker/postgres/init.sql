@@ -5,7 +5,10 @@ create table if not exists app_users (
   created_at timestamptz not null default now(),
   username text not null unique,
   display_name text not null,
+<<<<<<< HEAD
   gender text not null default 'male',
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   password_hash text not null,
   password_salt text not null
 );

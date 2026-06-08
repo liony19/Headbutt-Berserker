@@ -1,4 +1,5 @@
 {
+<<<<<<< HEAD
   "users": [
     {
       "id": 1,
@@ -456,4 +457,8 @@
       "playerName": "eder"
     }
   ]
+=======
+  "users": [],
+  "performanceHistory": []
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
 }

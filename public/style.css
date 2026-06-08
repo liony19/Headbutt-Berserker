@@ -379,8 +379,12 @@ html, body {
   font-weight: 800;
 }
 
+<<<<<<< HEAD
 .login-card input,
 .login-card select {
+=======
+.login-card input {
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   width: 100%;
   box-sizing: border-box;
   border: 1px solid rgba(255, 232, 182, 0.28);
@@ -392,8 +396,12 @@ html, body {
   outline: none;
 }
 
+<<<<<<< HEAD
 .login-card input:focus,
 .login-card select:focus {
+=======
+.login-card input:focus {
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   border-color: rgba(255, 232, 182, 0.78);
   box-shadow: 0 0 0 3px rgba(255, 232, 182, 0.12);
 }
@@ -459,6 +467,7 @@ html, body {
   padding: 13px 15px;
   font-size: 12px;
 }
+<<<<<<< HEAD
 
 .pose-control-panel {
   position: fixed;
@@ -1108,3 +1117,5 @@ body.landing-page {
     grid-template-columns: 1fr;
   }
 }
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41

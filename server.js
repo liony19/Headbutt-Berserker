@@ -2,9 +2,12 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+<<<<<<< HEAD
 const os = require("os");
 const WebSocket = require("ws");
 const { WebSocketServer } = WebSocket;
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
 const {
   DB_PATH,
   ensureLocalDbFile,
@@ -45,7 +48,10 @@ function createAuthToken(user) {
     sub: String(user.id),
     username: user.username,
     displayName: user.displayName,
+<<<<<<< HEAD
     gender: user.gender || "male",
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
     iat: Date.now()
   }));
   return `${payload}.${signTokenPayload(payload)}`;
@@ -596,6 +602,7 @@ async function handleHistoryInsightsGet(req, res) {
   sendJson(res, 200, buildHistoryInsights(normalizedEntries));
 }
 
+<<<<<<< HEAD
 async function handleAssistantChat(req, res) {
   const user = await requireAuthenticatedUser(req, res);
   if (!user) return;
@@ -623,6 +630,12 @@ async function handleHistoryPost(req, res) {
   const user = await requireAuthenticatedUser(req, res);
   if (!user) return;
   const body = await collectRequestBody(req);
+=======
+async function handleHistoryPost(req, res) {
+  const user = await requireAuthenticatedUser(req, res);
+  if (!user) return;
+  const body = await collectRequestBody(req);
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   const entry = normalizeHistoryItem({ ...body, userId: user.id, playerName: user.displayName });
 
   if (!entry) {
@@ -648,7 +661,11 @@ async function handleHistoryImport(req, res) {
 
 async function handleRegister(req, res) {
   const body = await collectRequestBody(req);
+<<<<<<< HEAD
   const user = await createUser(body.username, body.password, body.gender);
+=======
+  const user = await createUser(body.username, body.password);
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   sendAuthResponse(res, user);
 }
 
@@ -746,11 +763,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+<<<<<<< HEAD
   if (requestUrl.pathname === "/api/room" && (req.method === "GET" || req.method === "HEAD")) {
     handleRoomGet(req, res, requestUrl);
     return;
   }
 
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
   if (requestUrl.pathname === "/api/auth/register" && req.method === "POST") {
     handleRegister(req, res).catch((error) => sendJson(res, 400, { error: error.message }));
     return;
@@ -773,11 +793,14 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/history/insights" && req.method === "GET") {
     handleHistoryInsightsGet(req, res).catch((error) => sendJson(res, 500, { error: error.message }));
+<<<<<<< HEAD
     return;
   }
 
   if (requestUrl.pathname === "/api/assistant/chat" && req.method === "POST") {
     handleAssistantChat(req, res).catch((error) => sendJson(res, 500, { error: error.message }));
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
     return;
   }
 
@@ -943,4 +966,8 @@ server.listen(PORT, HOST, () => {
   console.log(`Headbutt Berserker server running at http://${HOST}:${PORT}`);
   console.log(`Database fallback path: ${DB_PATH}`);
   console.log(`Database provider: ${process.env.USE_SUPABASE === "true" ? "Supabase" : (process.env.USE_POSTGRES === "true" || process.env.DATABASE_URL ? "PostgreSQL" : "db.json")}`);
+<<<<<<< HEAD
 });
+=======
+});
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41

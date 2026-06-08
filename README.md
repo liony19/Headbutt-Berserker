@@ -25,8 +25,11 @@ O protótipo atual usa **A-Frame/WebXR** para rastrear a câmera/cabeça do joga
 - **Node.js** para o servidor/back-end;
 - **A-Frame/WebXR** para o front-end VR;
 - **JavaScript puro** no front-end;
+<<<<<<< HEAD
 - **MediaPipe Pose** para o controle corporal experimental;
 - **WebSocket (`ws`)** para salas PC/celular;
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
 - **PostgreSQL** via Docker Compose para histórico de desempenho;
 - **JSON local (`db.json`)** como fallback;
 - **Supabase/PostgreSQL** opcional para deploy externo.
@@ -54,6 +57,7 @@ Acesse:
 http://localhost:3000
 ```
 
+<<<<<<< HEAD
 Nesta versao modificada:
 
 ```text
@@ -108,6 +112,8 @@ Fluxo recomendado:
 
 O celular e o PC precisam estar na mesma rede local para usar o link com IP da maquina.
 
+=======
+>>>>>>> dbc362c836b71ac2f68d342dd05d3cb219b69d41
 A rota de saúde mostra se o banco está conectado:
 
 ```text
